@@ -97,7 +97,9 @@ func allowedWindowType(v *stats.View) bool {
 }
 
 func (c *collector) registerViews(views ...*stats.View) {
-	count := 0
+	// Keep track of the views that are new (and allowed) and not already registered.
+	unregisteredViews := make(map[string]*prometheus.Desc)
+
 	for _, view := range views {
 		if !allowedWindowType(view) {
 			continue
@@ -114,17 +116,29 @@ func (c *collector) registerViews(views ...*stats.View) {
 				tagKeysToLabels(view.TagKeys()),
 				nil,
 			)
-			c.registeredViewsMu.Lock()
-			c.registeredViews[sig] = desc
-			c.registeredViewsMu.Unlock()
-			count++
+			unregisteredViews[sig] = desc
 		}
 	}
-	if count == 0 {
+
+	// If there were no new views, then we have nothing to do.
+	if len(unregisteredViews) == 0 {
 		return
 	}
 
+	// Before the collector adds the new views, it needs to unregister, because
+	// the Prometheus registry uses the set of views a collector has as its identity,
+	// rather than, say, its actual identity, which is inconvenient if the set of
+	// views ever changes, which does happen.
 	c.reg.Unregister(c)
+
+	// Add the new views into the set of views in the collector.
+	c.registeredViewsMu.Lock()
+	for sig, desc := range unregisteredViews {
+		c.registeredViews[sig] = desc
+	}
+	c.registeredViewsMu.Unlock()
+
+	// Re-register the collector, which will result in all its views being registered.
 	if err := c.reg.Register(c); err != nil {
 		c.opts.onError(fmt.Errorf("cannot register the collector: %v", err))
 	}

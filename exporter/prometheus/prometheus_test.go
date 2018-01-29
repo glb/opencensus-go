@@ -94,3 +94,62 @@ func TestSingletonExporter(t *testing.T) {
 		t.Fatal("Non-nil exporter")
 	}
 }
+
+func TestCollectorRegisterViews(t *testing.T) {
+	m1, err := stats.NewMeasureInt64("my.org/measures/video_count_measure", "number of processed videos", "")
+	if err != nil {
+		t.Fatalf("NewMeasureInt64() = %v", err)
+	}
+
+	m2, err := stats.NewMeasureInt64("my.org/measures/video_size_measure", "size of processed videos", "MBy")
+	if err != nil {
+		t.Fatalf("NewMeasureInt64() = %v", err)
+	}
+
+	v1, err := stats.NewView(
+		"video_count_view",
+		"number of videos processed over time",
+		nil,
+		m1,
+		stats.CountAggregation{},
+		stats.Cumulative{},
+	)
+	if err != nil {
+		t.Fatalf("NewView() = %v", err)
+	}
+
+	v2, err := stats.NewView(
+		"video_cumulative_view",
+		"processed video size over time",
+		nil,
+		m2,
+		stats.DistributionAggregation([]float64{0, 1 << 16, 1 << 32}),
+		stats.Cumulative{},
+	)
+	if err != nil {
+		t.Fatalf("NewView() = %v", err)
+	}
+
+	// need a registry to build a collector
+	reg := prometheus.NewRegistry()
+
+	// our OnError function will keep track of errors we encounter
+	errs := make([]error, 0, 0)
+
+	collector := newCollector(Options{
+		OnError: func(err error) {
+			errs = append(errs, err)
+		},
+	}, reg)
+
+	// worker.reportUsage loops over views and calls Exporter.ExportView, which calls collector.addViewData,
+	// which calls collector.registerViews once for each view. This should be totally OK and not result in
+	// any duplicate view errors (or any errors at all).
+	collector.registerViews(v1)
+	collector.registerViews(v2)
+
+	// registering two different views should not result in an error.
+	if len(errs) != 0 {
+		t.Errorf("registerViews should not error when registering multiple views, got %v", errs[0])
+	}
+}
